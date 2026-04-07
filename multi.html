@@ -437,12 +437,11 @@ let opWasJumping = false;
 
 // Notification system
 let notifQueue = [];
-function showNotification(msg) {
-  notifQueue.push({ text:msg, timer:180 }); // 3 seconds
+function showNotification(msg, style) {
+  notifQueue.push({ text:msg, timer:180, style: style || null });
 }
 function renderNotifications() {
   ctx.save();
-  ctx.font = 'bold 13px "Comic Sans MS", cursive';
   ctx.textAlign = 'center';
   for(let i=notifQueue.length-1;i>=0;i--) {
     const n = notifQueue[i];
@@ -450,9 +449,20 @@ function renderNotifications() {
     if(n.timer <= 0) { notifQueue.splice(i,1); continue; }
     const alpha = n.timer < 40 ? n.timer/40 : 1;
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = '#333';
-    const ny = H - 30 - (notifQueue.length - 1 - i) * 22;
-    ctx.fillText(n.text, W/2, ny);
+    if(n.style === 'kill') {
+      ctx.font = 'bold 22px "Comic Sans MS", cursive';
+      ctx.fillStyle = '#d32f2f';
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 3;
+      const ny = H - 34 - (notifQueue.length - 1 - i) * 30;
+      ctx.strokeText(n.text, W/2, ny);
+      ctx.fillText(n.text, W/2, ny);
+    } else {
+      ctx.font = 'bold 13px "Comic Sans MS", cursive';
+      ctx.fillStyle = '#333';
+      const ny = H - 30 - (notifQueue.length - 1 - i) * 22;
+      ctx.fillText(n.text, W/2, ny);
+    }
   }
   ctx.globalAlpha = 1;
   ctx.restore();
@@ -475,7 +485,8 @@ bgImg.onload = () => {
 // PLATFORM GENERATION (seeded)
 // ══════════════════════════════════════════
 let platCounter = 0; // global counter for deterministic generation
-let lastEnemyPlat = -99; // platCounter when last enemy was spawned
+let lastEnemyPlat = -99;
+let lastTrampolinePlat = -99;
 
 function makePlatSeeded(x, y, type) {
   const w = PLAT_W;
@@ -504,7 +515,7 @@ function generatePlatform(scoreApprox) {
   if(r<.05+diff*.05) type=PT.SPRING;
   else if(r<.25+diff*.08) type=PT.MOVING;
   const plat = makePlatSeeded(nx,ny,type);
-  if(type===PT.NORMAL && sRand() < 0.07) plat.hasTrampoline = true;
+  if(type===PT.NORMAL && sRand() < 0.07 && (platCounter - lastEnemyPlat) >= 2) { plat.hasTrampoline = true; lastTrampolinePlat = platCounter; }
 
   // Progressive enemy spawning — percentage chance per platform
   // 0-1500:    0% → 5%
@@ -523,9 +534,10 @@ function generatePlatform(scoreApprox) {
   seedRandom(gameSeed * 7 + platCounter * 3571);
   const spawnRoll = sRand();
 
-  // Minimum 3 platforms between each enemy spawn to avoid clusters
+  // Minimum 3 platforms between each enemy spawn, and 6 after a trampoline
   const enemyCooldown = 3;
-  if(platCounter > 20 && (platCounter - lastEnemyPlat) >= enemyCooldown && spawnRoll < spawnChance) {
+  const trampolineSafe = 6;
+  if(platCounter > 20 && (platCounter - lastEnemyPlat) >= enemyCooldown && (platCounter - lastTrampolinePlat) >= trampolineSafe && spawnRoll < spawnChance) {
     lastEnemyPlat = platCounter;
     const enemyId = 'e' + platCounter;
     const alreadyDead = killedEnemies.has(enemyId);
@@ -579,6 +591,7 @@ function init() {
   backflipAngle=0; backflipping=false;
   platCounter=0;
   lastEnemyPlat=-99;
+  lastTrampolinePlat=-99;
   killedEnemies = new Set();
   stopMonsterSound();
   stopSoucoupeSound();
@@ -1711,7 +1724,7 @@ function onData(data, fromConn) {
     rp.dead = true; rp.spectating = true; rp.data.dead = true; rp.data.score = data.score;
     if(isHost) { for(const p2 of conns) { if(p2 !== rp) sendTo(p2, {type:'playerDead', pseudo:rp.pseudo, id:rp.id, score:data.score}); } }
     // Show notification
-    showNotification(rp.pseudo + ' est éliminé !');
+    showNotification(rp.pseudo + ' est éliminé !', 'kill');
     if(isHost) broadcastRoster();
     if(isHost) sendTo(rp, { type:'worldSync', world: makeWorldSnapshot() });
     if(matchActive && !finishReached && getActiveAliveCount() <= 1) showResults();
@@ -1719,7 +1732,7 @@ function onData(data, fromConn) {
   else if(data.type === 'playerDead') {
     const target = ensureRemotePlayer(data.pseudo, null, data.id || null);
     if(target) { target.dead = true; target.spectating = true; target.data.dead = true; target.data.score = data.score; }
-    showNotification(data.pseudo + ' est éliminé !');
+    showNotification(data.pseudo + ' est éliminé !', 'kill');
     if(matchActive && !finishReached && getActiveAliveCount() <= 1) showResults();
   }
   else if(data.type === 'win') {

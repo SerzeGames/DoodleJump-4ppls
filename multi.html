@@ -131,12 +131,14 @@ input[type=text]::placeholder{color:rgba(0,0,0,.4)}
     <img id="resultMyAvatar" src="images/Doodler_transparent.png" alt="Vous"/>
     <div class="name" id="resultMyName">Moi</div>
     <div class="pts" id="resultMyScore">0</div>
+    <div id="resultMyReady" style="font-size:18px;margin-top:2px"></div>
   </div>
   <div class="result-vs">:</div>
   <div class="result-player">
     <img id="resultOpAvatar" src="images/Doodler_transparent.png" alt="Adversaire"/>
     <div class="name" id="resultOpName">Adversaire</div>
     <div class="pts" id="resultOpScore">0</div>
+    <div id="resultOpReady" style="font-size:18px;margin-top:2px"></div>
   </div>
   <div class="result-vs" id="resultVsThird" style="display:none">:</div>
   <div class="result-player" id="resultThirdWrap" style="display:none">
@@ -146,7 +148,7 @@ input[type=text]::placeholder{color:rgba(0,0,0,.4)}
   </div>
 </div>
 <table class="result-table" id="resultTable">
-  <thead><tr><th>#</th><th></th><th>Joueur</th><th>Pts</th></tr></thead>
+  <thead><tr><th>#</th><th></th><th>Joueur</th><th>Pts</th><th></th></tr></thead>
   <tbody id="resultTableBody"></tbody>
 </table>
 <button class="btn-doodle" id="btnPlayAgain" style="margin-top:16px">Continuer</button>
@@ -154,6 +156,7 @@ input[type=text]::placeholder{color:rgba(0,0,0,.4)}
 <button id="btnKickVote" style="display:none;margin-top:10px;padding:6px 14px;background:#e8dfc4;border:2px solid #b0a080;border-radius:10px;font-family:'Comic Sans MS',cursive;font-size:12px;color:#888;cursor:not-allowed;opacity:0.5;transition:opacity 0.3s" disabled>Expulser les joueurs non prêts</button>
 <div id="kickStatus" style="color:#c62828;font-size:12px;margin-top:4px;min-height:16px;font-family:'Comic Sans MS',cursive"></div>
 <button class="btn-doodle-small" id="btnBackMenu" style="margin-top:4px">menu</button>
+<div id="scoreTimer" style="color:#c62828;font-size:12px;margin-top:8px;font-family:'Comic Sans MS',cursive;min-height:16px"></div>
 </div>
 
 <!-- Chat (inside .wrap but outside overlays) -->
@@ -385,6 +388,9 @@ let kickVotes = new Set();
 let meVotedKick = false;
 let kickTimerId = null;
 let hostTransferPending = false;
+let scoreScreenTimerId = null;
+let scoreScreenStartedAt = 0;
+const SCORE_SCREEN_TIMEOUT = 5 * 60 * 1000;
 
 // Helper: default remote player data
 function makeDefaultData() {
@@ -1609,8 +1615,8 @@ function ensureRemotePlayer(pseudo, skinId=null, id=null) {
 function broadcastRoster() {
   if(!isHost) return;
   const players = [
-    { id: peer && peer.id ? peer.id : null, pseudo: myPseudo, skinId: SKINS[currentSkinIndex].id, pts: myPoints, dead: myDead, spectating: spectatorMode },
-    ...conns.map(p => ({ id: p.id || null, pseudo: p.pseudo, skinId: p.skinId || 'classic', pts: p.pts || 0, dead: !!p.dead, spectating: !!p.spectating }))
+    { id: peer && peer.id ? peer.id : null, pseudo: myPseudo, skinId: SKINS[currentSkinIndex].id, pts: myPoints, dead: myDead, spectating: spectatorMode, ready: !!meReadyForNext },
+    ...conns.map(p => ({ id: p.id || null, pseudo: p.pseudo, skinId: p.skinId || 'classic', pts: p.pts || 0, dead: !!p.dead, spectating: !!p.spectating, ready: !!p.readyForNext }))
   ];
   sendData({ type:'roster', players });
 }
@@ -1636,8 +1642,8 @@ function refreshResultPlayers() {
     tableEl.style.display = 'table';
     const rankIcons = ['🥇','🥈','🥉','4️⃣'];
     const all = [
-      { pseudo: spectatorMode ? (myPseudo + ' (spec)') : myPseudo, pts: myPoints, img: SKINS[currentSkinIndex].img, isMe: true },
-      ...conns.map(p => ({ pseudo: p.pseudo, pts: p.pts || 0, img: p.playerImg ? p.playerImg.src : SKINS[0].img, isMe: false }))
+      { pseudo: spectatorMode ? (myPseudo + ' (spec)') : myPseudo, pts: myPoints, img: SKINS[currentSkinIndex].img, isMe: true, ready: meReadyForNext },
+      ...conns.map(p => ({ pseudo: p.pseudo, pts: p.pts || 0, img: p.playerImg ? p.playerImg.src : SKINS[0].img, isMe: false, ready: !!p.readyForNext }))
     ];
     all.sort((a,b) => b.pts - a.pts);
     const tbody = document.getElementById('resultTableBody');
@@ -1646,11 +1652,13 @@ function refreshResultPlayers() {
       const tr = document.createElement('tr');
       tr.className = 'rank-' + (i+1);
       const nameDisplay = p.isMe ? ('<b style="color:#388e3c">' + p.pseudo + '</b>') : p.pseudo;
+      const readyIcon = p.ready ? '<span style="color:#2e7d32;font-weight:bold">✔</span>' : '<span style="color:#c62828;font-weight:bold">✘</span>';
       tr.innerHTML =
         '<td class="rank-cell">' + (rankIcons[i] || (i+1)) + '</td>' +
         '<td class="avatar-cell"><img src="' + p.img + '"/></td>' +
         '<td class="name-cell">' + nameDisplay + '</td>' +
-        '<td class="pts-cell">' + p.pts + '</td>';
+        '<td class="pts-cell">' + p.pts + '</td>' +
+        '<td style="text-align:center;font-size:18px;width:30px">' + readyIcon + '</td>';
       tbody.appendChild(tr);
     });
   } else {
@@ -1659,11 +1667,13 @@ function refreshResultPlayers() {
     document.getElementById('resultMyName').textContent = spectatorMode ? (myPseudo + ' (spectateur)') : myPseudo;
     document.getElementById('resultMyScore').textContent = myPoints;
     document.getElementById('resultMyAvatar').src = SKINS[currentSkinIndex].img;
+    document.getElementById('resultMyReady').innerHTML = meReadyForNext ? '<span style="color:#2e7d32;font-weight:bold">✔</span>' : '<span style="color:#c62828;font-weight:bold">✘</span>';
     const sortedOps = conns.slice().sort((a,b)=>b.pts-a.pts);
     const op1 = sortedOps[0] || null;
     document.getElementById('resultOpName').textContent = op1 ? op1.pseudo : '';
     document.getElementById('resultOpScore').textContent = op1 ? op1.pts : 0;
     document.getElementById('resultOpAvatar').src = op1 ? op1.playerImg.src : SKINS[0].img;
+    document.getElementById('resultOpReady').innerHTML = (op1 && op1.readyForNext) ? '<span style="color:#2e7d32;font-weight:bold">✔</span>' : '<span style="color:#c62828;font-weight:bold">✘</span>';
     document.getElementById('resultVsThird').style.display = 'none';
     document.getElementById('resultThirdWrap').style.display = 'none';
   }
@@ -1749,8 +1759,16 @@ function onData(data, fromConn) {
   }
   else if(data.type === 'nextReady') {
     rp.readyForNext = true;
+    if(isHost) { for(const p2 of conns) { if(p2 !== rp) sendTo(p2, { type:'playerReady', id: rp.id, pseudo: rp.pseudo }); } }
     updateReadyStatus();
+    refreshResultPlayers();
     if(meReadyForNext && allOpponentsReady()) startNextRound();
+  }
+  else if(data.type === 'playerReady') {
+    const target = (data.id ? conns.find(p => p.id === data.id) : null) || conns.find(p => p.pseudo === data.pseudo);
+    if(target) target.readyForNext = true;
+    updateReadyStatus();
+    refreshResultPlayers();
   }
   else if(data.type === 'sound') {
     if(data.snd === 'death') playDeathSound();
@@ -1800,6 +1818,7 @@ function onData(data, fromConn) {
     document.getElementById('readyStatus').textContent = '';
     resetKickVote();
     initKickButton();
+    startScoreScreenTimer(data.timerStart || 0);
     const titleEl = document.getElementById('resultTitle');
     titleEl.textContent = 'En attente de la prochaine manche';
     titleEl.className = 'result-title win';
@@ -1844,8 +1863,10 @@ function onData(data, fromConn) {
         rp2.pts = Number(pl.pts) || 0;
         rp2.dead = !!pl.dead;
         rp2.spectating = !!pl.spectating;
+        if(pl.ready !== undefined) rp2.readyForNext = !!pl.ready;
       }
     }
+    updateReadyStatus();
     refreshResultPlayers();
   }
   else if(data.type === 'worldSync') {
@@ -2272,7 +2293,7 @@ function becomeHost() {
           sendTo(rp, { type: 'worldSync', world: makeWorldSnapshot() });
         } else if (startedSeed != null) {
           // A round already happened — show score screen, wait for next round
-          sendTo(rp, { type: 'showScores' });
+          sendTo(rp, { type: 'showScores', timerStart: scoreScreenStartedAt });
         } else {
           sendTo(rp, { type: 'seed', seed: gameSeed });
         }
@@ -2346,6 +2367,7 @@ async function startCountdown() {
 }
 
 function startMatch() {
+  clearScoreScreenTimer();
   startedSeed = gameSeed;
   initAudio();
   tryEnableGyro();
@@ -2403,6 +2425,43 @@ function getKickThreshold() {
   let ready = meReadyForNext ? 1 : 0;
   for(const p of conns) { if(p.readyForNext) ready++; }
   return Math.max(2, ready);
+}
+
+function startScoreScreenTimer(startedAt) {
+  clearScoreScreenTimer();
+  scoreScreenStartedAt = startedAt || Date.now();
+  const timerEl = document.getElementById('scoreTimer');
+  const tick = () => {
+    const elapsed = Date.now() - scoreScreenStartedAt;
+    const remainMs = SCORE_SCREEN_TIMEOUT - elapsed;
+    if(remainMs <= 0) {
+      clearScoreScreenTimer();
+      if(matchActive) return;
+      for(const p of conns) { if(p.conn) try{p.conn.close();}catch(e){} }
+      if(peer) try{peer.destroy();}catch(e){}
+      conns=[]; peer=null; connected=false;
+      const rs = document.getElementById('resultScreen');
+      rs.classList.add('hidden');
+      rs.classList.remove('visible');
+      showScreen('lobbyScreen');
+      lobbyActive=true; lobbyLastTs=0; requestAnimationFrame(lobbyLoop);
+      document.getElementById('btnSearch').disabled=false;
+      document.getElementById('lobbyStatus').textContent='';
+      myPoints=0;
+      return;
+    }
+    const remaining = Math.ceil(remainMs / 1000);
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    timerEl.textContent = 'Fin automatique dans ' + m + ':' + (s < 10 ? '0' : '') + s;
+  };
+  tick();
+  scoreScreenTimerId = setInterval(tick, 1000);
+}
+function clearScoreScreenTimer() {
+  if(scoreScreenTimerId) { clearInterval(scoreScreenTimerId); scoreScreenTimerId = null; }
+  const el = document.getElementById('scoreTimer');
+  if(el) el.textContent = '';
 }
 
 function resetKickVote() {
@@ -2472,6 +2531,7 @@ function showResults() {
   document.getElementById('readyStatus').textContent = '';
   resetKickVote();
   initKickButton();
+  startScoreScreenTimer();
 
   // Spectator: no point attribution for local player
   if(spectatorMode) {
@@ -2624,6 +2684,22 @@ function listenSensors() {
   }, 1500);
 }
 
+let shootTouchId = null, shootRepeatTimer = null, lastShootTX = W/2, lastShootTY = 0;
+const SHOOT_REPEAT_MS = 180;
+
+function startShootRepeat(tx, ty) {
+  lastShootTX = tx; lastShootTY = ty;
+  if(shootRepeatTimer) clearInterval(shootRepeatTimer);
+  shootRepeatTimer = setInterval(() => {
+    if(!running||stunned||suckedIn||dead||spectatorMode) { stopShootRepeat(); return; }
+    fireProjectile(lastShootTX, lastShootTY);
+  }, SHOOT_REPEAT_MS);
+}
+function stopShootRepeat() {
+  if(shootRepeatTimer) { clearInterval(shootRepeatTimer); shootRepeatTimer = null; }
+  shootTouchId = null;
+}
+
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
   initAudio();
@@ -2631,39 +2707,57 @@ canvas.addEventListener('touchstart', e => {
   if(!running||stunned||suckedIn||dead||spectatorMode) return;
 
   if(isMobile && gyroEnabled) {
-    // Gyro mode: all touches = shoot
     for(let i=0;i<e.changedTouches.length;i++){
       const t=e.changedTouches[i];
       const rect=canvas.getBoundingClientRect();
       const tx=(t.clientX-rect.left)*(W/rect.width);
       const ty=(t.clientY-rect.top)*(H/rect.height);
       fireProjectile(tx,ty);
+      shootTouchId = t.identifier;
+      startShootRepeat(tx, ty);
     }
     return;
   }
 
   if(isMobile && !gyroEnabled) {
-    // No gyro: left 30%=move left, right 30%=move right, center=shoot
     for(let i=0;i<e.changedTouches.length;i++){
       const t=e.changedTouches[i];
       const rect=canvas.getBoundingClientRect();
       const relX=(t.clientX-rect.left)/rect.width;
       if(relX<0.30){moveTouchId=t.identifier;keys.l=true;keys.r=false;}
       else if(relX>0.70){moveTouchId=t.identifier;keys.r=true;keys.l=false;}
-      else{const tx=(t.clientX-rect.left)*(W/rect.width);const ty=(t.clientY-rect.top)*(H/rect.height);fireProjectile(tx,ty);}
+      else{
+        const tx=(t.clientX-rect.left)*(W/rect.width);const ty=(t.clientY-rect.top)*(H/rect.height);
+        fireProjectile(tx,ty);
+        shootTouchId = t.identifier;
+        startShootRepeat(tx, ty);
+      }
     }
     return;
   }
 }, {passive:false});
 
+canvas.addEventListener('touchmove', e => {
+  for(let i=0;i<e.changedTouches.length;i++){
+    const t=e.changedTouches[i];
+    if(t.identifier===shootTouchId) {
+      const rect=canvas.getBoundingClientRect();
+      lastShootTX=(t.clientX-rect.left)*(W/rect.width);
+      lastShootTY=(t.clientY-rect.top)*(H/rect.height);
+    }
+  }
+}, {passive:true});
+
 canvas.addEventListener('touchend', e => {
   for(let i=0;i<e.changedTouches.length;i++){
     if(e.changedTouches[i].identifier===moveTouchId){moveTouchId=null;keys.l=false;keys.r=false;}
+    if(e.changedTouches[i].identifier===shootTouchId) stopShootRepeat();
   }
 }, {passive:false});
 
 canvas.addEventListener('touchcancel', e => {
   moveTouchId=null;keys.l=false;keys.r=false;
+  stopShootRepeat();
 }, {passive:false});
 
 // Gyro will be enabled on first user gesture (button click or touch)
@@ -2673,15 +2767,23 @@ function fireProjectile(targetX,targetY) {
   const startX=player.x+player.w/2, startY=player.y;
   let dx=targetX-startX, dy=targetY-startY;
   const len=Math.sqrt(dx*dx+dy*dy);
-  if(len<1){dx=0;dy=-1;}else{dx/=len;dy/=len;}
-  if(dy>0.1) dy=-0.05;
+  if(len<1){dx=0;dy=-1;}
+  else{dx/=len;dy/=len;}
+
+  if(dy >= -0.15) {
+    // Tap is at or below the player — shoot upward, angled by horizontal offset
+    const hOff = targetX - startX;
+    const maxAngle = 0.7;
+    dx = Math.max(-maxAngle, Math.min(maxAngle, hOff / 120));
+    dy = -Math.sqrt(1 - dx*dx);
+  }
+
   const len2=Math.sqrt(dx*dx+dy*dy);dx/=len2;dy/=len2;
-  const spd=16;
+  const spd=22;
   projectiles.push({x:startX-4,y:startY-6,w:8,h:12,vx:dx*spd,vy:dy*spd});
   shooting=true;shootTimer=0;
   if(dx<-0.1)player.facing=-1;else if(dx>0.1)player.facing=1;
   playShootSound();
-  // Send shoot to opponent
   sendData({ type:'shoot', sx:startX-4, sy:startY-6, vx:dx*spd, vy:dy*spd, camY:cameraY });
 }
 
@@ -2734,6 +2836,7 @@ document.getElementById('btnPlayAgain').addEventListener('click', () => {
   document.getElementById('btnPlayAgain').textContent = 'En attente...';
   document.getElementById('btnPlayAgain').disabled = true;
   updateReadyStatus();
+  refreshResultPlayers();
   if(allOpponentsReady()) startNextRound();
 });
 
@@ -2828,6 +2931,7 @@ function updateReadyStatus() {
 }
 
 function startNextRound() {
+  clearScoreScreenTimer();
   meReadyForNext = false;
   for(const p of conns) p.readyForNext = false;
   document.getElementById('btnPlayAgain').disabled = false;
@@ -2850,6 +2954,7 @@ function startNextRound() {
   }
 }
 document.getElementById('btnBackMenu').addEventListener('click', () => {
+  clearScoreScreenTimer();
   sendData({ type:'quit', pseudo: myPseudo });
   setTimeout(() => {
     for(const p of conns) { if(p.conn) try{p.conn.close();}catch(e){} }
